@@ -1,110 +1,78 @@
-<div align="center">
+# WinSAR
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="branding/logo/winsar-lockup-horizontal-on-dark.svg">
-  <img src="branding/logo/winsar-lockup-horizontal.svg" width="300" alt="WinSAR">
-</picture>
+## Overview
 
-**Un gestionnaire d'archives libre pour Windows 11, écrit en Rust, qui s'intègre vraiment à l'Explorateur.**
+WinSAR is a free archive manager for Windows 11, written in Rust. It works as a file explorer in which an archive opens like a folder, and it integrates with Windows File Explorer through the Windows 11 context menu and the preview pane. It also ships a command-line tool.
 
-[![CI](https://github.com/moha528/winsar/actions/workflows/ci.yml/badge.svg)](https://github.com/moha528/winsar/actions/workflows/ci.yml)
-[![Licence MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+## Problem
 
-</div>
+Archive tools on Windows tend either to keep an interface that predates Windows 11 or to integrate only through the legacy context menu. Extraction is also a classic attack surface: an entry named `../../something` or with an absolute path can write outside the destination folder. WinSAR's goals are to open archives as ordinary folders, to integrate with the current Windows shell, and to make extraction safe by construction.
 
-WinSAR remplace WinRAR et 7-Zip pour l'usage quotidien. C'est un explorateur de fichiers où une archive s'ouvre comme un dossier. Il apporte un menu contextuel natif de Windows 11, un aperçu dans le volet de l'Explorateur, et une interface Fluent avec l'effet Mica.
+## Approach / Architecture
 
-## Fonctionnalités
+The repository is a Cargo workspace with four crates and a Tauri application:
 
-- **Formats** : ZIP, 7z, TAR, TAR.GZ, TAR.BZ2, TAR.XZ et TAR.ZST en lecture et en écriture. RAR en lecture seule, voir la [licence UnRAR](THIRD-PARTY-NOTICES.md).
-- **Chiffrement AES-256** en ZIP et 7z. En 7z, les noms de fichiers sont chiffrés aussi.
-- **Explorateur intégré** :
-  - accueil avec accès rapide et lecteurs ;
-  - barre d'adresse qui va du disque jusqu'à l'intérieur d'une archive ;
-  - historique, recherche, glisser-déposer dans les deux sens.
-- **Extraction intelligente** : un seul élément à la racine est déposé à côté de l'archive, sinon tout va dans un dossier à son nom. Il est aussi possible d'extraire seulement une sélection.
-- **Modification d'archives** : ajout et suppression de fichiers. En ZIP, les entrées conservées sont recopiées sans recompression.
-- **Conversion** d'un format à l'autre (RAR → 7z, ZIP → TAR.ZST…), l'original étant conservé.
-- **Archives imbriquées** ouvertes sur place, **aperçu rapide** (Espace) des images et des textes, **sommes de contrôle** CRC32 et SHA-256.
-- **Volumes** `.001`, `.002`… au format de 7-Zip, test d'intégrité, propriétés détaillées (Alt+Entrée), archives récentes.
-- **Intégration Windows** :
-  - menu contextuel principal de Windows 11, via `IExplorerCommand` et un package MSIX « sparse » ;
-  - aperçu du contenu des archives dans le volet de visualisation, via `IPreviewHandler` ;
-  - associations de fichiers ;
-  - notifications natives ;
-  - icônes du système, thème clair ou sombre, couleur d'accent.
-- **Liste rapide** : affichage virtualisé (des dizaines de milliers de fichiers), colonnes redimensionnables, interface qui s'adapte à toutes les largeurs de fenêtre.
-- **Mises à jour** : WinSAR signale les nouvelles versions publiées sur GitHub, sans rien installer sans vous.
-- **CLI** : `winsar list | extract | create | convert | test`.
+| Component | Role |
+|---|---|
+| `crates/winsar-core` | Archive engine: one backend per format (ZIP, 7z, TAR family, RAR), safe extraction, creation, modification, conversion, split volumes, integrity test |
+| `crates/winsar-cli` | `winsar` binary: `list`, `extract`, `create`, `convert`, `test` |
+| `crates/winsar-shell` | DLL loaded by `explorer.exe` that implements `IExplorerCommand` for the Windows 11 context menu |
+| `crates/winsar-preview` | DLL that implements `IPreviewHandler` to show an archive's content in the Explorer preview pane |
+| `app/src-tauri`, `app/src` | Tauri 2 desktop application; interface in TypeScript without a framework |
+| `packaging` | Sparse MSIX manifest and scripts that register the shell integration |
 
-## Installation
+**Formats.** ZIP, 7z, TAR, TAR.GZ, TAR.BZ2, TAR.XZ and TAR.ZST can be read and written. RAR is read-only, through the UnRAR library under its own license.
 
-Téléchargez l'installeur dans les [Releases](https://github.com/moha528/winsar/releases). Chaque version liste ses changements dans le [journal des modifications](CHANGELOG.md) et donne les sommes SHA-256 de ses fichiers.
+**Safe extraction.** Every entry name goes through a single function before anything is written: any `..` component rejects the entry, absolute paths and drive letters are stripped, characters forbidden by Windows are replaced, and reserved device names (`CON`, `NUL`, `COM1`…) are prefixed. When an archive is created, symbolic links are skipped so that nothing outside the selection is archived.
 
-> **Versions non signées.** WinSAR n'a pas encore de certificat de signature de code. Windows SmartScreen peut donc afficher « Windows a protégé votre ordinateur » : cliquez sur « Informations complémentaires », puis « Exécuter quand même ». Vérifiez au besoin l'installeur avec `SHA256SUMS.txt`.
->
-> Pour la même raison, le menu principal de Windows 11 et l'aperçu dans l'Explorateur ne s'installent pas : l'installeur pose à la place un menu classique, dans « Afficher plus d'options » (Maj+F10). Voir [packaging/README.md](packaging/README.md).
+**Encryption.** ZIP archives can be encrypted with AES-256. 7z archives use AES-256 and also encrypt the header, so file names are not readable without the password.
 
-## Compiler depuis les sources
+**Other operations.**
 
-Prérequis :
+- Adding and removing files; in ZIP, kept entries are copied without recompression.
+- Converting between formats: the content is extracted to a hidden working folder next to the destination and re-archived, and the original is never modified.
+- Split volumes `.001`, `.002`… in the 7-Zip format, an integrity test, CRC32 and SHA-256 checksums.
+- Opening nested archives in place.
 
-- Windows 10 21H2 ou plus récent, Windows 11 recommandé ;
-- [Rust](https://rustup.rs) stable, toolchain `x86_64-pc-windows-msvc` ;
-- Visual Studio Build Tools 2022 avec la charge de travail « Développement Desktop en C++ » ;
-- [Node.js](https://nodejs.org) 22 ou plus récent ;
-- WebView2, présent par défaut sous Windows 11.
+**Interface.** The interface provides a home view with quick access and drives, an address bar that goes from the disk into an archive, history, search, and drag and drop in both directions. The list is virtualised so that it can show tens of thousands of entries.
 
-Installer les dépendances, une seule fois :
+## Tech stack
+
+Rust (zip, sevenz-rust2, tar, flate2, xz2, zstd, unrar, windows-rs for COM) · Tauri 2 · TypeScript · NSIS installer · sparse MSIX packaging · GitHub Actions.
+
+## How to run
+
+Installers are on the [releases page](https://github.com/moha528/winsar/releases), each with its SHA-256 sums and an entry in the [changelog](CHANGELOG.md).
+
+Releases are not code-signed yet. Windows SmartScreen may therefore warn at installation: choose "More info", then "Run anyway". For the same reason the installer cannot register the Windows 11 context menu or the preview handler; it installs the classic context menu instead, under "Show more options" (Shift+F10). See [packaging/README.md](packaging/README.md).
+
+To build from source you need Windows 10 21H2 or later (Windows 11 recommended), stable Rust with the `x86_64-pc-windows-msvc` toolchain, Visual Studio Build Tools 2022 with the "Desktop development with C++" workload, Node.js 22 or later, and WebView2.
 
 ```bash
 cd app && npm install
-```
-
-L'application en développement, avec rechargement à chaud :
-
-```bash
 cd app && npm run tauri dev
-```
-
-L'installeur complet (NSIS), avec l'intégration à l'Explorateur :
-
-```bash
 cd app && npm run bundle
 ```
 
-Les tests du moteur, du menu contextuel et de l'aperçu :
+Tests of the engine, the context menu and the preview handler, and the command-line tool:
 
 ```bash
 cargo test --workspace
-```
-
-Le CLI :
-
-```bash
 cargo run -p winsar-cli -- extract archive.7z
 ```
 
-## Organisation du dépôt
+## Status
 
-| Dossier | Contenu |
-|---|---|
-| `crates/winsar-core` | Moteur d'archives : formats, extraction sûre, création, modification, volumes, test |
-| `crates/winsar-cli` | Binaire `winsar` |
-| `crates/winsar-shell` | DLL du menu contextuel de Windows 11 (`IExplorerCommand`), chargée dans `explorer.exe` |
-| `crates/winsar-preview` | DLL d'aperçu dans le volet de l'Explorateur (`IPreviewHandler`) |
-| `app/src-tauri` | Application Tauri 2 : commandes, intégrations Windows |
-| `app/src` | Interface (TypeScript, sans framework) |
-| `packaging` | Manifeste MSIX sparse, signature et installation de l'intégration à l'Explorateur |
-| `branding` | Identité : logo, icônes, planche, guide d'usage ([branding/README.md](branding/README.md)) |
+- Version 0.1.0, released on 22 October 2026.
+- 33 tests: unit tests (including path traversal and Windows name sanitisation) and integration tests that round-trip every format with and without AES, check modification, split volumes, corruption detection, wrong-password reporting, cancellation and read-only RAR, and load the shell and preview COM components.
+- Continuous integration on Windows runs Clippy with warnings as errors and the full test suite.
+- Releases are unsigned until the code-signing application described below is accepted.
 
-## Contribuer
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). The code and its comments are written in French.
 
-Les contributions sont bienvenues : lisez [CONTRIBUTING.md](CONTRIBUTING.md). Le code et ses commentaires sont en français.
+## License
 
-## Licence
-
-WinSAR est distribué sous licence [MIT](LICENSE). L'extraction RAR repose sur le code UnRAR d'Alexander Roshal, sous sa propre licence : voir [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+[MIT](LICENSE). RAR extraction relies on Alexander Roshal's UnRAR code, under its own license: see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ## Code signing policy
 
@@ -114,12 +82,8 @@ Free code signing for Windows releases will be provided by [SignPath.io](https:/
 - Committers and reviewers: [moha528](https://github.com/moha528). Approvers: [moha528](https://github.com/moha528).
 - Signing requests are approved manually, for tagged releases only.
 
-*Politique de signature : les versions Windows seront signées gratuitement par SignPath.io, avec un certificat de la SignPath Foundation (demande en cours). Chaque fichier signé est compilé depuis ce dépôt par GitHub Actions.*
-
 ## Privacy
 
 WinSAR does not collect, store or transmit personal data. It sends no telemetry and has no account.
 
 The only network request it makes is the update check: at most once a day, WinSAR reads the latest release from the public GitHub API (`api.github.com/repos/moha528/winsar/releases/latest`). Nothing about you or your files is sent; GitHub sees an ordinary request from your IP address, as for any visit. You can turn it off in Settings › Updates.
-
-*Confidentialité : WinSAR ne collecte, ne stocke ni ne transmet aucune donnée personnelle. Sa seule requête réseau est la recherche de mise à jour, une fois par jour au plus, désactivable dans Paramètres › Mises à jour.*
